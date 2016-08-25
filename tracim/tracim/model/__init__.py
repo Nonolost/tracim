@@ -101,7 +101,7 @@ def init_model(engine):
 # Import your model modules here.
 from tracim.model.auth import User, Group, Permission
 from tracim.model.data import Content, ContentRevisionRO
-
+from tracim.model.locks import Lock, Url2Token
 
 @event.listens_for(DBSession, 'before_flush')
 def prevent_content_revision_delete(session: Session, flush_context: UOWTransaction,

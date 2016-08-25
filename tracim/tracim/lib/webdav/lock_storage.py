@@ -1,6 +1,8 @@
 import time
 
-from tracim.lib.webdav.sql_model import Lock, Url2Token
+import transaction
+from tracim.model import DBSession
+from tracim.model.locks import Lock, Url2Token
 from wsgidav import util
 from wsgidav.lock_manager import normalizeLockRoot, lockString, generateLockToken, validateLock
 from wsgidav.rw_lock import ReadWriteLock
@@ -40,6 +42,9 @@ class LockStorage(object):
     LOCK_TIME_OUT_DEFAULT = 604800  # 1 week, in seconds
     LOCK_TIME_OUT_MAX = 4 * 604800  # 1 month, in seconds
 
+    def __base_query(self):
+        return DBSession.query(Lock)
+
     def __init__(self):
         self._session = None# todo Session()
         self._lock = ReadWriteLock()
@@ -74,8 +79,8 @@ class LockStorage(object):
 
     def clear(self):
         """Delete all entries."""
-        self._session.query(Lock).all().delete(synchronize_session=False)
-        self._session.commit()
+        self.__base_query().all().delete(synchronize_session=False)
+        transaction.commit()
 
     def get(self, token):
         """Return a lock dictionary for a token.
@@ -91,7 +96,7 @@ class LockStorage(object):
         """
         self._lock.acquireRead()
         try:
-            lock_base = self._session.query(Lock).filter(Lock.token == token).one_or_none()
+            lock_base = self.__base_query().filter(Lock.token == token).one_or_none()
             if lock_base is None:
                 # Lock not found: purge dangling URL2TOKEN entries
                 _logger.debug("Lock purged dangling: %s" % token)
@@ -152,7 +157,7 @@ class LockStorage(object):
             # Store lock
             lock_db = from_dict_to_base(lock)
 
-            self._session.add(lock_db)
+            DBSession.add(lock_db)
 
             # Store locked path reference
             url2token = Url2Token(
@@ -160,8 +165,8 @@ class LockStorage(object):
                 token=token
             )
 
-            self._session.add(url2token)
-            self._session.commit()
+            DBSession.add(url2token)
+            transaction.commit()
 
             self._flush()
             _logger.debug("LockStorageDict.set(%r): %s" % (org_path, lockString(lock)))
@@ -182,7 +187,7 @@ class LockStorage(object):
             Lock dictionary.
             Raises ValueError, if token is invalid.
         """
-        lock_db = self._session.query(Lock).filter(Lock.token == token).one_or_none()
+        lock_db = self.__base_query().filter(Lock.token == token).one_or_none()
         assert lock_db is not None, "Lock must exist"
         assert timeout == -1 or timeout > 0
         if timeout < 0 or timeout > LockStorage.LOCK_TIME_OUT_MAX:
@@ -193,7 +198,7 @@ class LockStorage(object):
             # Note: shelve dictionary returns copies, so we must reassign values:
             lock_db.timeout = timeout
             lock_db.expire = time.time() + timeout
-            self._session.commit()
+            transaction.commit()
             self._flush()
         finally:
             self._lock.release()
@@ -206,19 +211,19 @@ class LockStorage(object):
         """
         self._lock.acquireWrite()
         try:
-            lock_db = self._session.query(Lock).filter(Lock.token == token).one_or_none()
+            lock_db = self.__base_query().filter(Lock.token == token).one_or_none()
             _logger.debug("delete %s" % lockString(from_base_to_dict(lock_db)))
             if lock_db is None:
                 return False
             # Remove url to lock mapping
-            url2token = self._session.query(Url2Token).filter(
+            url2token = DBSession.query(Url2Token).filter(
                 Url2Token.path == lock_db.root,
                 Url2Token.token == token).one_or_none()
             if url2token is not None:
-                self._session.delete(url2token)
+                DBSession.delete(url2token)
             # Remove the lock
-            self._session.delete(lock_db)
-            self._session.commit()
+            DBSession.delete(lock_db)
+            transaction.commit()
 
             self._flush()
         finally:
@@ -260,15 +265,15 @@ class LockStorage(object):
         path = normalizeLockRoot(path)
         self._lock.acquireRead()
         try:
-            tokList = self._session.query(Url2Token.token).filter(Url2Token.path == path).all()
+            tokList = DBSession.query(Url2Token.token).filter(Url2Token.path == path).all()
             lockList = []
             if includeRoot:
                 __appendLocks(tokList)
 
             if includeChildren:
-                for url, in self._session.query(Url2Token.path).group_by(Url2Token.path):
+                for url, in DBSession.query(Url2Token.path).group_by(Url2Token.path):
                     if util.isChildUri(path, url):
-                        __appendLocks(self._session.query(Url2Token.token).filter(Url2Token.path == url))
+                        __appendLocks(DBSession.query(Url2Token.token).filter(Url2Token.path == url))
 
             return lockList
         finally:
